@@ -1,0 +1,9 @@
+.DS_Store
+
+# Generated FTRCS output
+runs/*
+!runs/.gitkeep
+
+# Distributed separately as a GitHub Release asset
+data/supergranule_synthetic.nc
+data/supergranule_synthetic_uncompressed.nc
