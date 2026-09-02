@@ -11,6 +11,12 @@ The method and its application to photospheric supergranulation are described in
 arXiv:2606.17108  
 https://arxiv.org/abs/2606.17108
 
+## Contributors
+
+- Francisco J. Beron-Vera
+
+- Maria Josefina Olascoaga
+
 
 ## Overview
 
