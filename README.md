@@ -11,12 +11,15 @@ The method and its application to photospheric supergranulation are described in
 arXiv:2606.17108  
 https://arxiv.org/abs/2606.17108
 
+---
+
 ## Contributors
 
 - Francisco J. Beron-Vera
 
 - Maria Josefina Olascoaga
 
+---
 
 ## Overview
 
@@ -58,6 +61,7 @@ LAVD classification
 finite-time rotational coherent sets
 ```
 
+---
 
 ## Repository structure
 
@@ -99,6 +103,7 @@ The MATLAB files are auxiliary:
 
 MATLAB is not required for the FTRCS calculations themselves.
 
+---
 
 ## Velocity-data convention
 
@@ -142,6 +147,7 @@ dimension 3 -> t
 
 All velocity interpolation, trajectory integration, spatial differentiation, Cauchy--Green calculations, vorticity, and LAVD calculations use this internal convention.
 
+---
 
 ## Installation
 
@@ -263,6 +269,7 @@ E_LAVD > 1.
 
 Thus the IDL--SEBA stage identifies finite-time coherent sets, while the LAVD stage distinguishes those exhibiting enhanced accumulated intrinsic rotation.
 
+---
 
 ## Application parameters
 
@@ -285,6 +292,7 @@ These include:
 - SEBA thresholding parameters; and
 - LAVD classification threshold.
 
+---
 
 ## Example 1: Gulf of Mexico altimetry
 
@@ -316,6 +324,7 @@ The corresponding MATLAB visualization script is
 matlab/plot_gom.m
 ```
 
+---
 
 ## Example 2: synthetic supergranule-like flow
 
@@ -384,6 +393,7 @@ The output contains the quantities required for subsequent visualization and ana
 
 Generated files under `runs/` are not tracked by Git.
 
+---
 
 ## Notes on interpretation
 
@@ -395,18 +405,17 @@ Similarly, IDL--SEBA boundaries should not in general be interpreted as equivale
 
 The Gulf of Mexico and synthetic supergranule-like examples illustrate the framework in dynamically different settings, including an ocean flow with land boundaries and a strongly compressible cellular flow.
 
+---
 
-## Reference
+## Code development
 
-If you use this implementation, please refer to:
+The Julia implementation was adapted from MATLAB codes developed by
+F. J. Beron-Vera, with contributions from M. J. Olascoaga to the
+translation to Julia. ChatGPT was used to assist with code translation,
+debugging, and documentation. The numerical methodology, detection
+strategy, and scientific design are those of F. J. Beron-Vera.
 
-F. J. Beron-Vera,  
-**"Quasi-material finite-time rotationally coherent sets in photospheric supergranulation,"**  
-submitted to *Physics of Plasmas*, 2026.  
-arXiv:2606.17108.
-
-https://arxiv.org/abs/2606.17108
-
+---
 
 ## Status
 
