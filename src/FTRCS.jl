@@ -10,6 +10,7 @@ using Statistics
 using Arpack
 using LinearAlgebra
 using NCDatasets
+using Printf
 
 # ============================================================
 # FINITE-TIME ROTATIONAL COHERENT STRUCTURES (FTRCS)
@@ -1531,6 +1532,89 @@ function assemble_idl_operator_rectangular(
 
 end
 
+# ============================================================
+# STEP 5A MATERIAL SURVIVAL DOMAIN
+#
+# Determine the initial conditions whose trajectories remain
+# inside the observed velocity domain for the complete analysis
+# interval.
+#
+# The returned mask is defined on the FLOW-MAP seed grid.
+# A point is retained only if its trajectory is finite and lies
+# inside the velocity domain at every output time.
+# ============================================================
+
+function material_survival_mask(
+    F::FlowMap,
+    V::VelocityField;
+    verbose::Bool = true
+)
+
+    Nx = length(F.xseed)
+    Ny = length(F.yseed)
+
+    size(F.PhiX,1) == Nx ||
+        error("PhiX x dimension inconsistent with xseed")
+
+    size(F.PhiX,2) == Ny ||
+        error("PhiX y dimension inconsistent with yseed")
+
+    size(F.PhiX) == size(F.PhiY) ||
+        error("PhiX and PhiY sizes differ")
+
+    xmin = minimum(V.x)
+    xmax = maximum(V.x)
+    ymin = minimum(V.y)
+    ymax = maximum(V.y)
+
+    survive = trues(Nx,Ny)
+
+    exit_time = fill(NaN,Nx,Ny)
+
+    for k in eachindex(F.times)
+
+        X = @view F.PhiX[:,:,k]
+        Y = @view F.PhiY[:,:,k]
+
+        inside =
+            isfinite.(X) .&
+            isfinite.(Y) .&
+            (X .>= xmin) .&
+            (X .<= xmax) .&
+            (Y .>= ymin) .&
+            (Y .<= ymax)
+
+        newly_exited =
+            survive .& .!inside
+
+        exit_time[newly_exited] .= F.times[k]
+
+        survive .&= inside
+    end
+
+    if verbose
+
+        Ns = count(survive)
+        Ntot = length(survive)
+
+        println()
+        println("STEP 5A material survival domain")
+        println("--------------------------------")
+        println(
+            "analysis interval = ",
+            F.times[1]," -- ",F.times[end]," h"
+        )
+        println(
+            "surviving CG nodes = ",
+            Ns," / ",Ntot,
+            " (",
+            round(100*Ns/Ntot,digits=2),
+            "%)"
+        )
+    end
+
+    return BitMatrix(survive),exit_time
+end
 
 # ============================================================
 # MASKED IDL / FEM HELPERS
@@ -1559,26 +1643,44 @@ function masked_idl_wet_grid(
     iy::AbstractVector{Int}
 )
 
-    size(wet_mask) == (length(V.x),length(V.y)) ||
-        error("wet_mask must have size (length(V.x),length(V.y))")
+    # Preferred case: mask is already defined on the
+    # Cauchy--Green / flow-map seed grid.
 
-    Nx = length(ix)
-    Ny = length(iy)
-
-    wet = falses(Nx,Ny)
-
-    for j in 1:Ny
-        yj = CG.y[iy[j]]
-        jv = nearest_grid_index(V.y,yj)
-
-        for i in 1:Nx
-            xi = CG.x[ix[i]]
-            iv = nearest_grid_index(V.x,xi)
-            wet[i,j] = wet_mask[iv,jv]
-        end
+    if size(wet_mask) == (length(CG.x),length(CG.y))
+        return BitMatrix(wet_mask[ix,iy])
     end
 
-    return wet
+    # Backward-compatible case: mask is defined on the
+    # original velocity grid.
+
+    if size(wet_mask) == (length(V.x),length(V.y))
+
+        Nx = length(ix)
+        Ny = length(iy)
+
+        wet = falses(Nx,Ny)
+
+        for j in 1:Ny
+
+            yj = CG.y[iy[j]]
+            jv = nearest_grid_index(V.y,yj)
+
+            for i in 1:Nx
+
+                xi = CG.x[ix[i]]
+                iv = nearest_grid_index(V.x,xi)
+
+                wet[i,j] = wet_mask[iv,jv]
+            end
+        end
+
+        return wet
+    end
+
+    error(
+        "wet_mask must be defined either on the " *
+        "Cauchy--Green grid or on the velocity grid"
+    )
 end
 
 
@@ -2743,28 +2845,33 @@ function select_idl_crossover(
 end
 
 # ============================================================
-# IDL-SEBA CANDIDATE EXTRACTION
+# IDL-SEBA CANDIDATE EXTRACTION BY SUBPARTITION OF UNITY
 #
 # For the selected inflation parameter a:
 #
-#   1. reshape each localized SEBA vector into space-time,
-#   2. compute one threshold from the 90th percentile of its
-#      positive values over the entire space-time domain,
-#   3. threshold each spatial time slice,
-#   4. retain the largest 8-connected component,
-#   5. discard components smaller than min_area grid cells.
+#   1. take the positive part of each complete space-time SEBA
+#      vector,
+#   2. normalize each complete SEBA vector so that its global
+#      space-time maximum is one, exactly as in Gary Froyland's
+#      SEBA postprocessing,
+#   3. determine one global subpartition-of-unity threshold
+#      tau_pu from the full collection of normalized SEBA
+#      vectors,
+#   4. define candidate supports by S_m > tau_pu.
 #
-# This reproduces the candidate construction used in
-# MATLAB run_08_idl_sweep_a.m and
-# run_10_extract_idl_candidates.m.
+# No plateau detection, per-slice normalization, connected-
+# component selection, or physical area threshold is used.
 # ============================================================
 
 struct IDLCandidateResult
 
     a::Float64
 
+    # Positive, globally normalized space-time SEBA vectors.
+    # Each column has maximum one.
     S::Matrix{Float64}
 
+    # Same global subpartition threshold for every object.
     thresholds::Vector{Float64}
 
     masks::BitArray{4}
@@ -2775,9 +2882,347 @@ struct IDLCandidateResult
 
     order::Vector{Int}
 
-    qlevel::Float64
-    min_area::Int
+    tau_pu::Float64
 
+    # Retained for compatibility with legacy downstream code.
+    # No area filtering is performed in candidate extraction.
+    min_area::Int
+    max_area::Int
+
+end
+
+# ============================================================
+# FINITE-LIFETIME IDL-SEBA EPISODES
+#
+# A localized IDL-SEBA candidate need not be active over the
+# full analysis interval.  CandidateEpisode records one
+# contiguous interval over which a candidate mask is nonempty.
+#
+# rank       : position in C.order (Rayleigh-quotient ordering)
+# seba_index : column/mask index in the SEBA representation
+# episode    : contiguous active episode number for this candidate
+# birth_idx  : first active IDL time index
+# death_idx  : last active IDL time index
+# active_slices : number of consecutive active IDL slices
+#
+# Time values are intentionally not stored here.  The episode
+# indices refer to the IDL time grid and can later be mapped to
+# O.t[birth_idx] and O.t[death_idx].
+# ============================================================
+
+struct CandidateEpisode
+    rank::Int
+    seba_index::Int
+    episode::Int
+    birth_idx::Int
+    death_idx::Int
+    active_slices::Int
+end
+
+# ============================================================
+# EXTRACT CONTIGUOUS ACTIVE EPISODES FROM IDL-SEBA MASKS
+#
+# Each candidate is active at time index k when its thresholded
+# spatial mask contains at least one grid cell.  If a candidate
+# disappears and later reappears, the disconnected periods are
+# returned as separate CandidateEpisode records.
+# ============================================================
+
+function extract_candidate_episodes(
+    C::IDLCandidateResult;
+    verbose::Bool = true
+)
+
+    Nx,Ny,Nt,nobj = size(C.masks)
+
+    length(C.order) == nobj ||
+        error("C.order is inconsistent with candidate masks")
+
+    episodes = CandidateEpisode[]
+
+    if verbose
+        println()
+        println("IDL-SEBA finite-lifetime episodes")
+        println("---------------------------------")
+        println("candidates = ",nobj)
+        println("time slices = ",Nt)
+        println()
+        println(" rank   SEBA object   episode   birth   death   active slices")
+    end
+
+    for (rank,m) in enumerate(C.order)
+
+        active = falses(Nt)
+
+        @inbounds for k in 1:Nt
+            active[k] = any(@view C.masks[:,:,k,m])
+        end
+
+        k = 1
+        iepisode = 0
+
+        while k <= Nt
+
+            # Skip inactive slices.
+            while k <= Nt && !active[k]
+                k += 1
+            end
+
+            k > Nt && break
+
+            kb = k
+
+            # Advance through this contiguous active interval.
+            while k <= Nt && active[k]
+                k += 1
+            end
+
+            kd = k - 1
+            iepisode += 1
+
+            ep = CandidateEpisode(
+                rank,
+                m,
+                iepisode,
+                kb,
+                kd,
+                kd-kb+1
+            )
+
+            push!(episodes,ep)
+
+            if verbose
+                println(
+                    lpad(ep.rank,5), "   ",
+                    lpad(ep.seba_index,11), "   ",
+                    lpad(ep.episode,7), "   ",
+                    lpad(ep.birth_idx,5), "   ",
+                    lpad(ep.death_idx,5), "   ",
+                    lpad(ep.active_slices,13)
+                )
+            end
+
+        end
+
+    end
+
+    if verbose
+        println()
+        println("episodes = ",length(episodes))
+        println(
+            "candidates with >= 1 episode = ",
+            length(unique([ep.seba_index for ep in episodes])),
+            " / ",
+            nobj
+        )
+    end
+
+    return episodes
+end
+
+# ============================================================
+# FILTER AND GROUP FINITE-LIFETIME EPISODES
+#
+# Raw episode extraction is deliberately permissive: even a
+# single isolated active IDL slice is recorded. Such one-slice
+# events are useful diagnostics of threshold crossings but are
+# not promoted to finite-lifetime coherent episodes used later
+# for FTRCS classification.
+#
+# Step 2 therefore:
+#
+#   1. retains only episodes with at least min_episode_slices
+#      consecutive active IDL slices;
+#
+#   2. keeps rejected short episodes for diagnostics;
+#
+#   3. groups the retained episodes by their exact lifespan
+#      (birth_idx,death_idx).
+#
+# All episodes with the same lifespan can later reuse one
+# flow-map/LAVD calculation.
+# ============================================================
+
+struct CandidateEpisodeGroup
+    birth_idx::Int
+    death_idx::Int
+    episodes::Vector{CandidateEpisode}
+end
+
+
+struct CandidateEpisodeGrouping
+    min_episode_slices::Int
+    retained::Vector{CandidateEpisode}
+    rejected::Vector{CandidateEpisode}
+    groups::Vector{CandidateEpisodeGroup}
+end
+
+
+function group_candidate_episodes(
+    episodes::Vector{CandidateEpisode};
+    min_episode_slices::Int = 2,
+    verbose::Bool = true
+)
+
+    min_episode_slices >= 1 ||
+        error("min_episode_slices must be >= 1")
+
+    retained =
+        CandidateEpisode[
+            ep for ep in episodes
+            if ep.active_slices >= min_episode_slices
+        ]
+
+    rejected =
+        CandidateEpisode[
+            ep for ep in episodes
+            if ep.active_slices < min_episode_slices
+        ]
+
+    grouped =
+        Dict{
+            Tuple{Int,Int},
+            Vector{CandidateEpisode}
+        }()
+
+    for ep in retained
+
+        key =
+            (
+                ep.birth_idx,
+                ep.death_idx
+            )
+
+        push!(
+            get!(
+                grouped,
+                key,
+                CandidateEpisode[]
+            ),
+            ep
+        )
+
+    end
+
+    keys_sorted =
+        sort(
+            collect(keys(grouped));
+            by = key -> (key[1],key[2])
+        )
+
+    groups =
+        CandidateEpisodeGroup[]
+
+    for key in keys_sorted
+
+        eps =
+            grouped[key]
+
+        sort!(
+            eps;
+            by = ep -> (ep.rank,ep.episode)
+        )
+
+        push!(
+            groups,
+            CandidateEpisodeGroup(
+                key[1],
+                key[2],
+                eps
+            )
+        )
+
+    end
+
+    if verbose
+
+        println()
+        println("IDL-SEBA finite-lifetime episode filtering")
+        println("------------------------------------------")
+        println(
+            "minimum consecutive active slices = ",
+            min_episode_slices
+        )
+        println(
+            "raw episodes                      = ",
+            length(episodes)
+        )
+        println(
+            "retained episodes                 = ",
+            length(retained)
+        )
+        println(
+            "rejected short episodes           = ",
+            length(rejected)
+        )
+
+        if !isempty(rejected)
+
+            println()
+            println("Rejected short episodes")
+            println("-----------------------")
+            println(
+                " rank   SEBA object   episode   birth   death   active slices"
+            )
+
+            for ep in rejected
+
+                println(
+                    lpad(ep.rank,5), "   ",
+                    lpad(ep.seba_index,11), "   ",
+                    lpad(ep.episode,7), "   ",
+                    lpad(ep.birth_idx,5), "   ",
+                    lpad(ep.death_idx,5), "   ",
+                    lpad(ep.active_slices,13)
+                )
+
+            end
+
+        end
+
+        println()
+        println("IDL-SEBA lifespan groups")
+        println("------------------------")
+        println(
+            " group   birth   death   slices   episodes   SEBA objects"
+        )
+
+        for (ig,G) in enumerate(groups)
+
+            objects =
+                join(
+                    [
+                        string(ep.seba_index)
+                        for ep in G.episodes
+                    ],
+                    ","
+                )
+
+            println(
+                lpad(ig,6), "   ",
+                lpad(G.birth_idx,5), "   ",
+                lpad(G.death_idx,5), "   ",
+                lpad(G.death_idx-G.birth_idx+1,6), "   ",
+                lpad(length(G.episodes),8), "   ",
+                objects
+            )
+
+        end
+
+        println()
+        println(
+            "unique retained lifespan groups = ",
+            length(groups)
+        )
+
+    end
+
+    return CandidateEpisodeGrouping(
+        min_episode_slices,
+        retained,
+        rejected,
+        groups
+    )
 end
 
 # ============================================================
@@ -2913,126 +3358,152 @@ end
 
 function extract_idl_candidates(
     O::AbstractIDLOperator,
-    crossover::IDLCrossoverResult;
-    qlevel::Real = 0.90,
-    min_area::Int = 20
+    crossover::IDLCrossoverResult
 )
 
-    0.0 < qlevel < 1.0 ||
-        error("qlevel must lie between 0 and 1")
-
-    min_area >= 1 ||
-        error("min_area must be >= 1")
-
     isel = crossover.selected_index
-
     D = crossover.diagnostics[isel]
 
-    S = D.S
+    Sraw = D.S
+    nobj = size(Sraw,2)
 
-    nobj = size(S,2)
-
-    Nx = O.Nx
-    Ny = O.Ny
-    Nt = O.Nt
-
-    size(S,1) == O.Nst ||
+    size(Sraw,1) == O.Nst ||
         error("SEBA vectors are inconsistent with IDL grid")
 
+    # --------------------------------------------------------
+    # Gary-style SEBA normalization.
     #
-    # Reshape localized space-time vectors onto the
-    # IDL space-time grid.
-    #
+    # Work with the positive part and normalize each COMPLETE
+    # space-time SEBA vector by its own global maximum.
+    # This is not a separate normalization at each time slice.
+    # --------------------------------------------------------
 
-    Q = expand_idl_vectors(O,S)
-
-    thresholds = fill(NaN,nobj)
-
-    masks = falses(
-        Nx,
-        Ny,
-        Nt,
-        nobj
-    )
+    S = max.(Sraw,0.0)
 
     println()
-    println("Extracting IDL-SEBA candidates")
-    println("a          = ",D.a)
-    println("objects    = ",nobj)
-    println(
-        "threshold  = positive-value quantile ",
-        qlevel
-    )
-    println(
-        "min area   = ",
-        min_area,
-        " grid cells"
-    )
-
-    progress = Progress(
-        nobj;
-        desc = "IDL candidates: ",
-        dt = 0.5
-    )
+    println("Extracting IDL-SEBA candidates by subpartition of unity")
+    println("--------------------------------------------------------")
+    println("a       = ",D.a)
+    println("objects = ",nobj)
 
     for m in 1:nobj
 
-        #
-        # One threshold is computed from the positive values
-        # of the full space-time localized vector.
-        #
+        sm = maximum(@view S[:,m])
 
-        s = @view S[:,m]
+        isfinite(sm) && sm > 0.0 ||
+            error("SEBA object $m has no positive finite support")
 
-        positive_values =
-            s[s .> 0.0]
-
-        if isempty(positive_values)
-            next!(progress)
-            continue
-        end
-
-        thr =
-            quantile(
-                positive_values,
-                Float64(qlevel)
-            )
-
-        thresholds[m] = thr
-
-        #
-        # Apply the same threshold at each time slice and
-        # retain the largest connected spatial component.
-        #
-
-        for k in 1:Nt
-
-            Qslice =
-                @view Q[:,:,k,m]
-
-            rawmask =
-                Qslice .>= thr
-
-            cleanmask =
-                largest_component(
-                    rawmask;
-                    min_area = min_area
-                )
-
-            masks[:,:,k,m] .= cleanmask
-
-        end
-
-        next!(progress)
+        @views S[:,m] ./= sm
 
     end
 
+    colmax = [maximum(@view S[:,m]) for m in 1:nobj]
+
+    println(
+        "normalized column maxima = ",
+        minimum(colmax)," ... ",maximum(colmax)
+    )
+
+    # --------------------------------------------------------
+    # Gary Froyland's subpartition_unity construction.
     #
-    # Rank candidates by increasing Rayleigh quotient.
-    # This is an ordering only; no candidates are discarded.
+    # At each space-time point, sort object memberships in
+    # descending order and form their cumulative sum.  tau_pu
+    # is the largest SEBA value participating wherever that
+    # cumulative sum exceeds one.
+    # --------------------------------------------------------
+
+    S_descend = sort(S; dims=2, rev=true)
+    S_sum = cumsum(S_descend; dims=2)
+
+    violating_values =
+        S_descend[S_sum .> 1.0]
+
+    tau_pu =
+        isempty(violating_values) ?
+        0.0 :
+        maximum(violating_values)
+
+    # Strict inequality reproduces Gary's
+    #     S(S <= taupu) = 0
+    # convention.
+    support = S .> tau_pu
+
+    # Verify the subpartition condition using the thresholded
+    # SEBA amplitudes, not merely the Boolean masks.
+    S_pu = S .* support
+    row_sums = vec(sum(S_pu; dims=2))
+
+    max_sum = maximum(row_sums)
+    nviol =
+        count(x -> x > 1.0 + 1e-12,row_sums)
+
+    println()
+    println("Subpartition threshold")
+    println("----------------------")
+    println("tau_pu = ",tau_pu)
+    println("max sum_m S_m after threshold = ",max_sum)
+    println("rows with sum > 1             = ",nviol)
+
+    nviol == 0 ||
+        error("Subpartition-of-unity check failed")
+
+    # --------------------------------------------------------
+    # Expand the thresholded supports back to x-y-time-object.
+    # No connected-component pruning is performed.
+    # --------------------------------------------------------
+
+    Nx,Ny,Nt = O.Nx,O.Ny,O.Nt
+
+    # Expand the thresholded IDL vectors from the active
+    # space-time DOFs back onto the complete x-y-time grid.
     #
+    # For MaskedIDLOperator, O.Nst is smaller than Nx*Ny*Nt,
+    # so a direct reshape is not valid.
+
+    support_full =
+        expand_idl_vectors(
+            O,
+            Float64.(support)
+        )
+
+    masks =
+        BitArray(
+            support_full .> 0.5
+        )
+
+    thresholds = fill(tau_pu,nobj)
 
     order = sortperm(D.rho)
+
+    println()
+    println("Subpartition-defined IDL-SEBA supports")
+    println("--------------------------------------")
+    println(" object   active slices   median area [cells]")
+
+    for m in order
+
+        active_areas = Int[]
+
+        for k in 1:Nt
+            A = count(@view masks[:,:,k,m])
+            A > 0 && push!(active_areas,A)
+        end
+
+        medA =
+            isempty(active_areas) ?
+            NaN :
+            median(active_areas)
+
+        @printf(
+            "%6d      %3d / %3d          %8.1f\n",
+            m,
+            length(active_areas),
+            Nt,
+            medA
+        )
+
+    end
 
     return IDLCandidateResult(
         D.a,
@@ -3043,11 +3514,13 @@ function extract_idl_candidates(
         copy(D.rho_space),
         copy(D.rho_a2material),
         order,
-        Float64(qlevel),
-        min_area
+        tau_pu,
+        1,
+        typemax(Int)
     )
 
 end
+
 
 # ============================================================
 # LAVD
@@ -3148,24 +3621,75 @@ function compute_vorticity(
 end
 
 # ============================================================
-# LAVD ON THE FLOW-MAP / CG INITIAL-CONDITION GRID
+# LAVD OVER A SUBINTERVAL OF AN EXISTING FULL FLOW MAP
 #
-# This follows MATLAB run_12_compute_lavd.m.
+# The flow map F is NOT recomputed.  Its trajectories retain
+# the original material labels x0 at the initial time of the
+# full IDL analysis.
 #
-# The integral is accumulated using the same right-endpoint
-# rectangular rule:
+# For each x0, this computes
 #
-#       L_k = L_{k-1} +
-#             dt |omega(F(t_k),t_k)-<omega>(t_k)|.
+#   integral from ta to tb of
+#   |omega(x(t;x0),t)-<omega>(t)| dt
+#
+# using the same right-endpoint rectangular rule as
+# compute_lavd.
 # ============================================================
 
-function compute_lavd(
+function compute_lavd_interval(
     V::VelocityField,
-    F::FlowMap
+    F::FlowMap,
+    omega::Array{Float64,3},
+    omega_mean::Vector{Float64},
+    ta::Real,
+    tb::Real
 )
 
-    omega,omega_mean =
-        compute_vorticity(V)
+    size(omega) == size(V.u) ||
+        error(
+            "Precomputed vorticity is inconsistent with velocity grid"
+        )
+
+    length(omega_mean) == length(V.t) ||
+        error(
+            "Precomputed mean vorticity is inconsistent with velocity times"
+        )
+
+    ta < tb ||
+        error("LAVD interval must satisfy ta < tb")
+
+    #
+    # Find the full-flow-map times corresponding to ta and tb.
+    #
+    # The IDL episode times should lie on the flow-map time grid.
+    # We nevertheless use nearest indices and verify the match.
+    #
+
+    ka = argmin(abs.(F.times .- ta))
+    kb = argmin(abs.(F.times .- tb))
+
+    tol =
+        100*eps(Float64) *
+        max(
+            1.0,
+            abs(Float64(ta)),
+            abs(Float64(tb))
+        )
+
+    abs(F.times[ka]-ta) <= tol ||
+        error(
+            "Episode birth time $ta h is not on the flow-map time grid; " *
+            "nearest flow-map time is $(F.times[ka]) h"
+        )
+
+    abs(F.times[kb]-tb) <= tol ||
+        error(
+            "Episode death time $tb h is not on the flow-map time grid; " *
+            "nearest flow-map time is $(F.times[kb]) h"
+        )
+
+    ka < kb ||
+        error("LAVD interval contains fewer than two flow-map times")
 
     #
     # Linear x-y-t interpolation of vorticity.
@@ -3179,38 +3703,43 @@ function compute_lavd(
 
     Nx = length(F.xseed)
     Ny = length(F.yseed)
-    Nt = length(F.times)
 
-    lavd = zeros(Float64,Nx,Ny,Nt)
+    lavd_score = zeros(Float64,Nx,Ny)
 
     xmin,xmax = first(V.x),last(V.x)
     ymin,ymax = first(V.y),last(V.y)
     tmin,tmax = first(V.t),last(V.t)
 
     println()
-    println("Accumulating LAVD")
-    println(
-        "window = ",
-        first(F.times),
-        " -- ",
-        last(F.times),
-        " h"
-    )
-    println("grid   = $Nx x $Ny x $Nt")
+    println("Accumulating finite-lifetime LAVD")
+    println("full flow-map window = ",
+            first(F.times)," -- ",last(F.times)," h")
+    println("LAVD interval        = ",
+            F.times[ka]," -- ",F.times[kb]," h")
+    println("material grid        = $Nx x $Ny")
 
     progress = Progress(
-        Nt-1;
+        kb-ka;
         desc = "LAVD slices: ",
         dt = 0.5
     )
 
-    for k in 2:Nt
+    #
+    # IMPORTANT:
+    #
+    # F.PhiX[:,:,k] and F.PhiY[:,:,k] remain indexed by the
+    # original material labels x0.  We merely begin accumulating
+    # at ka+1 rather than constructing a new flow map at ta.
+    #
+
+    for k in (ka+1):kb
 
         tk = F.times[k]
         dtk = F.times[k]-F.times[k-1]
 
         #
-        # Nearest native velocity time, matching MATLAB.
+        # Nearest native velocity time, matching compute_lavd
+        # and the MATLAB implementation.
         #
 
         kt = argmin(abs.(V.t .- tk))
@@ -3220,37 +3749,39 @@ function compute_lavd(
         @inbounds for j in 1:Ny
             for i in 1:Nx
 
+                #
+                # Once a material trajectory has become invalid
+                # during this LAVD interval, keep its score NaN.
+                #
+
+                if !isfinite(lavd_score[i,j])
+                    continue
+                end
+
                 x = F.PhiX[i,j,k]
                 y = F.PhiY[i,j,k]
 
-                #
-                # MATLAB griddedInterpolant(...,'none')
-                # returns NaN outside the data domain.
-                #
-
-                if x < xmin || x > xmax ||
+                if !isfinite(x) ||
+                   !isfinite(y) ||
+                   x < xmin || x > xmax ||
                    y < ymin || y > ymax ||
                    tk < tmin || tk > tmax
 
-                    lavd[i,j,k] = NaN
+                    lavd_score[i,j] = NaN
                     continue
                 end
 
                 w = W(x,y,tk)
 
-                prev = lavd[i,j,k-1]
-
-                if isfinite(prev) &&
-                   isfinite(w) &&
+                if isfinite(w) &&
                    isfinite(wmean)
 
-                    lavd[i,j,k] =
-                        prev +
+                    lavd_score[i,j] +=
                         dtk*abs(w-wmean)
 
                 else
 
-                    lavd[i,j,k] = NaN
+                    lavd_score[i,j] = NaN
 
                 end
             end
@@ -3259,15 +3790,345 @@ function compute_lavd(
         next!(progress)
     end
 
-    return LAVDField(
-        lavd,
-        omega_mean,
-        F.xseed,
-        F.yseed,
-        F.times
+    return lavd_score
+
+end
+
+# ============================================================
+# FINITE-LIFETIME LAVD CLASSIFICATION (STEP 4)
+# ============================================================
+
+struct EpisodeFTRCSRecord
+    rank::Int
+    seba_index::Int
+    episode::Int
+    birth_idx::Int
+    death_idx::Int
+    birth_time::Float64
+    death_time::Float64
+    active_slices::Int
+    area_birth::Int
+    lavd_candidate::Float64
+    lavd_background::Float64
+    E_LAVD::Float64
+    pass::Bool
+end
+
+struct EpisodeFTRCSResult
+    records::Vector{EpisodeFTRCSRecord}
+    ratio_min::Float64
+    n_groups::Int
+end
+
+function classify_ftrcs_episodes(
+    V::VelocityField,
+    O::AbstractIDLOperator,
+    C::IDLCandidateResult,
+    grouping::CandidateEpisodeGrouping,
+    F::FlowMap;
+    lavd_ratio_min::Real = 1.0,
+    verbose::Bool = true
+)
+    println()
+    println("Preparing finite-lifetime LAVD classification")
+    println("---------------------------------------------")
+    println("retained episodes = ",length(grouping.retained))
+    println("lifespan groups   = ",length(grouping.groups))
+    println("E_LAVD minimum    = ",lavd_ratio_min)
+
+    omega,omega_mean = compute_vorticity(V)
+    records = EpisodeFTRCSRecord[]
+
+    # LAVD classification uses the same material survival domain
+    # on which the IDL operator and SEBA objects were constructed.
+    #
+    # C.masks is indexed by the original material labels at the
+    # initial time of the full IDL analysis.  Therefore this mask
+    # must remain in those same material coordinates.
+    domain_mask =
+        O isa MaskedIDLOperator ?
+        copy(O.wet_mask) :
+        trues(O.Nx,O.Ny)
+
+    verbose && println(
+        "IDL material survival domain = ",
+        count(domain_mask),
+        " / ",
+        length(domain_mask),
+        " initial material labels"
+    )
+
+    for (ig,G) in enumerate(grouping.groups)
+
+        ta = O.t[G.birth_idx]
+        tb = O.t[G.death_idx]
+
+        ta < tb ||
+            error(
+                "Retained episode group must span at least two IDL times"
+            )
+
+        verbose && println(
+            "\nLifespan group ",ig," / ",length(grouping.groups),
+            ": slices ",G.birth_idx,":",G.death_idx,
+            "  time ",ta," -- ",tb," h",
+            "  episodes = ",length(G.episodes)
+        )
+
+		 lavd_score =
+            compute_lavd_interval(
+                V,
+                F,
+                omega,
+                omega_mean,
+                ta,
+                tb
+            )
+
+	    any(.!isfinite.(lavd_score[domain_mask])) &&
+            error(
+                "Non-finite LAVD found inside the IDL material " *
+                "survival domain"
+            )		
+
+        for ep in G.episodes
+
+            candidate_mask =
+                (@view C.masks[
+                    :,
+                    :,
+                    G.birth_idx,
+                    ep.seba_index
+                ]) .&
+                domain_mask
+
+            area_birth = count(candidate_mask)
+
+            area_birth > 0 ||
+                error(
+                    "Retained episode has empty birth mask"
+                )
+
+            background_mask =
+                domain_mask .&
+                .!candidate_mask
+
+            count(background_mask) > 0 ||
+                error(
+                    "FTRCS candidate fills the complete admissible " *
+                    "material domain"
+                )
+
+            lavd_candidate =
+                mean(
+                    lavd_score[candidate_mask]
+                )
+
+            lavd_background =
+                mean(
+                    lavd_score[background_mask]
+                )
+
+            E =
+                lavd_background > 0 ?
+                lavd_candidate/lavd_background :
+                NaN
+
+            pass =
+                isfinite(E) &&
+                E >= Float64(lavd_ratio_min)
+
+            push!(
+                records,
+                EpisodeFTRCSRecord(
+                    ep.rank,
+                    ep.seba_index,
+                    ep.episode,
+                    ep.birth_idx,
+                    ep.death_idx,
+                    ta,
+                    tb,
+                    ep.active_slices,
+                    area_birth,
+                    lavd_candidate,
+                    lavd_background,
+                    E,
+                    pass
+                )
+            )
+
+        end
+    end
+
+    sort!(
+        records;
+        by = R -> (
+            R.birth_idx,
+            R.death_idx,
+            R.rank,
+            R.episode
+        )
+    )
+
+    if verbose
+
+        println()
+        println("Finite-lifetime FTRCS classification")
+        println("------------------------------------")
+        println(
+            " object  ep   birth[h]  death[h]  slices  area0   ",
+            "<LAVD>_A   <LAVD>_B   E_LAVD   FTRCS"
+        )
+
+        for R in records
+
+            @printf(
+                "%6d %3d   %8.3f  %8.3f   %5d  %5d   %8.4f   %8.4f   %7.3f   %s\n",
+                R.seba_index,
+                R.episode,
+                R.birth_time,
+                R.death_time,
+                R.active_slices,
+                R.area_birth,
+                R.lavd_candidate,
+                R.lavd_background,
+                R.E_LAVD,
+                R.pass ? "yes" : "no"
+            )
+
+        end
+
+        println(
+            "\nfinite-lifetime FTRCS selected = ",
+            count(R -> R.pass,records),
+            " / ",
+            length(records)
+        )
+
+    end
+
+    return EpisodeFTRCSResult(
+        records,
+        Float64(lavd_ratio_min),
+        length(grouping.groups)
     )
 
 end
+
+# ============================================================
+# FTRCS OVERLAP / REDUNDANCY DIAGNOSTICS
+#
+# Compare all LAVD-selected finite-lifetime FTRCS over their
+# common active time interval.
+#
+# Jaccard:
+#
+#       J(A,B) = |A intersection B| / |A union B|
+#
+# Containment:
+#
+#       C(A,B) = |A intersection B| / min(|A|,|B|)
+#
+# C is useful for identifying nested structures: a small set
+# may be almost completely contained in a larger set even when
+# their Jaccard overlap is modest.
+#
+# This routine is DIAGNOSTIC ONLY.  It does not merge, reject,
+# rank, or otherwise modify any FTRCS.
+# ============================================================
+
+function diagnose_ftrcs_overlap(
+    C::IDLCandidateResult,
+    R::EpisodeFTRCSResult;
+    verbose::Bool = true
+)
+
+    selected = [r for r in R.records if r.pass]
+    n = length(selected)
+
+    if verbose
+        println()
+        println("FTRCS overlap / redundancy diagnostics")
+        println("--------------------------------------")
+        println("selected FTRCS = ",n)
+    end
+
+    n < 2 && return nothing
+
+    if verbose
+        println()
+        println(
+            " obj.i  ep.i   obj.j  ep.j   common",
+            "    mean J     max J",
+            "     mean C     min C"
+        )
+    end
+
+    for i in 1:n-1
+
+        Arec = selected[i]
+
+        for j in i+1:n
+
+            Brec = selected[j]
+
+            k0 = max(Arec.birth_idx,Brec.birth_idx)
+            k1 = min(Arec.death_idx,Brec.death_idx)
+
+            k0 <= k1 || continue
+
+            Jvals = Float64[]
+            Cvals = Float64[]
+
+            for k in k0:k1
+
+                A = @view C.masks[:,:,k,Arec.seba_index]
+                B = @view C.masks[:,:,k,Brec.seba_index]
+
+                nA = count(A)
+                nB = count(B)
+
+                # Both episodes should be active over the common
+                # interval, but guard against an empty slice.
+                (nA > 0 && nB > 0) || continue
+
+                nAB = count(A .& B)
+                nAU = nA + nB - nAB
+
+                J = nAU > 0 ?
+                    nAB / nAU :
+                    0.0
+
+                containment =
+                    nAB / min(nA,nB)
+
+                push!(Jvals,J)
+                push!(Cvals,containment)
+
+            end
+
+            isempty(Jvals) && continue
+
+            if verbose
+                @printf(
+                    "%6d %5d   %6d %5d   %6d   %8.3f  %8.3f   %8.3f  %8.3f\n",
+                    Arec.seba_index,
+                    Arec.episode,
+                    Brec.seba_index,
+                    Brec.episode,
+                    length(Jvals),
+                    mean(Jvals),
+                    maximum(Jvals),
+                    mean(Cvals),
+                    minimum(Cvals)
+                )
+            end
+        end
+    end
+
+    return nothing
+end
+
 
 # ============================================================
 # FTRCS CLASSIFICATION
@@ -3514,6 +4375,7 @@ function save_ftrcs_netcdf(
     crossover::IDLCrossoverResult,
     C::IDLCandidateResult;
     ftrcs::Union{Nothing,FTRCSResult} = nothing,
+    episode_ftrcs::Union{Nothing,EpisodeFTRCSResult} = nothing,
     t0::Real,
     t1::Real
 )
@@ -3556,7 +4418,7 @@ function save_ftrcs_netcdf(
     # SEBA and masks in candidate-rank order.
     #
 
-    S4 = expand_idl_vectors(O,Dsel.S)
+    S4 = expand_idl_vectors(O,C.S)
 
     seba_out =
         Array{Float64}(undef,O.Nx,O.Ny,O.Nt,Nc)
@@ -3619,6 +4481,10 @@ function save_ftrcs_netcdf(
         defDim(ds,"candidate",Nc)
         defDim(ds,"a",Na)
         defDim(ds,"mode",Nm)
+
+        if episode_ftrcs !== nothing
+            defDim(ds,"episode",length(episode_ftrcs.records))
+        end
 
         vx = defVar(ds,"x",Float64,("x",))
         vy = defVar(ds,"y",Float64,("y",))
@@ -3766,7 +4632,57 @@ function save_ftrcs_netcdf(
         voriginal[:] = Int32.(order)
 
         #
-        # Optional LAVD/FTRCS postprocessing.
+        # Finite-lifetime episode-level FTRCS classification.
+        #
+
+        if episode_ftrcs !== nothing
+
+            R = episode_ftrcs.records
+            Ne = length(R)
+
+            vobj = defVar(ds,"episode_seba_index",Int32,("episode",))
+            veno = defVar(ds,"episode_number",Int32,("episode",))
+            vbi  = defVar(ds,"episode_birth_index",Int32,("episode",))
+            vdi  = defVar(ds,"episode_death_index",Int32,("episode",))
+            vbt  = defVar(ds,"episode_birth_time",Float64,("episode",))
+            vdt  = defVar(ds,"episode_death_time",Float64,("episode",))
+            vns  = defVar(ds,"episode_active_slices",Int32,("episode",))
+            vab  = defVar(ds,"episode_birth_area_cells",Int32,("episode",))
+            vLA  = defVar(ds,"episode_LAVD_candidate_mean",Float64,("episode",))
+            vLB  = defVar(ds,"episode_LAVD_background_mean",Float64,("episode",))
+            vEE  = defVar(ds,"episode_E_LAVD",Float64,("episode",))
+            vFF  = defVar(ds,"episode_FTRCS",Int8,("episode",))
+
+            vobj[:] = Int32.([r.seba_index for r in R])
+            veno[:] = Int32.([r.episode for r in R])
+            vbi[:]  = Int32.([r.birth_idx for r in R])
+            vdi[:]  = Int32.([r.death_idx for r in R])
+            vbt[:]  = [r.birth_time for r in R]
+            vdt[:]  = [r.death_time for r in R]
+            vns[:]  = Int32.([r.active_slices for r in R])
+            vab[:]  = Int32.([r.area_birth for r in R])
+            vLA[:]  = [r.lavd_candidate for r in R]
+            vLB[:]  = [r.lavd_background for r in R]
+            vEE[:]  = [r.E_LAVD for r in R]
+            vFF[:]  = Int8.([r.pass ? 1 : 0 for r in R])
+
+            vbt.attrib["units"] = "h"
+            vdt.attrib["units"] = "h"
+            vFF.attrib["description"] =
+                "0 finite-lifetime FTCS episode is nonrotational; 1 rotational FTRCS"
+
+            ds.attrib["finite_lifetime_lavd_ratio_min"] =
+                episode_ftrcs.ratio_min
+
+            ds.attrib["number_of_retained_episodes"] =
+                Ne
+
+            ds.attrib["number_of_lifespan_groups"] =
+                episode_ftrcs.n_groups
+        end
+
+        #
+        # Legacy global LAVD/FTRCS postprocessing.
         #
 
         if ftrcs !== nothing
@@ -3847,11 +4763,17 @@ function save_ftrcs_netcdf(
         ds.attrib["a_selected"] =
             crossover.a_selected
 
-        ds.attrib["candidate_quantile"] =
-            C.qlevel
+        ds.attrib["candidate_support_method"] =
+            "SEBA subpartition of unity"
 
-        ds.attrib["candidate_min_area_cells"] =
-            C.min_area
+        ds.attrib["candidate_subpartition_threshold"] =
+            C.tau_pu
+
+        ds.attrib["candidate_seba_normalization"] =
+            "positive part; each complete space-time SEBA vector normalized to global maximum 1"
+
+        ds.attrib["candidate_connected_component_pruning"] =
+            "none"
 
         ds.attrib["number_of_candidates"] =
             Nc
@@ -3863,7 +4785,7 @@ function save_ftrcs_netcdf(
     end
 
     println()
-    println("Saved FTRCS output:")
+    println("Saved finite-lifetime FTRCS output:")
     println(filename)
 
     return filename
@@ -3894,13 +4816,23 @@ export
     idl_rayleigh_diagnostics,
     select_idl_crossover,
     IDLCandidateResult,
+    CandidateEpisode,
+    CandidateEpisodeGroup,
+    CandidateEpisodeGrouping,
+    EpisodeFTRCSRecord,
+    EpisodeFTRCSResult,
     largest_component,
     extract_idl_candidates,
+    extract_candidate_episodes,
+    group_candidate_episodes,
     LAVDField,
     FTRCSResult,
     compute_vorticity,
     compute_lavd,
     classify_ftrcs,
+	 classify_ftrcs_episodes,
+    diagnose_ftrcs_overlap,
+	 material_survival_mask,
     save_ftrcs_netcdf
 
 end

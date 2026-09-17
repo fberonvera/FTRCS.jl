@@ -7,11 +7,11 @@ using LinearAlgebra
 using Printf
 
 # ============================================================
-# FTRCS APPLICATION: SYNTHETIC SUPERGRANULE-LIKE FLOW
+# FTRCS APPLICATION: HINODE PHOTOSPHERIC FLOW
 #
 # Run from the repository root with, for example,
 #
-#     julia --project=. --threads=18 scripts/run_FTRCS_supergranule.jl
+#     julia --project=. --threads=auto scripts/run_FTRCS_hinode.jl
 #
 # All application-specific choices are made in this file.
 # FTRCS.jl contains the reusable numerical implementation.
@@ -37,20 +37,20 @@ data_file = joinpath(
     @__DIR__,
     "..",
     "data",
-    "supergranule_synthetic.nc"
+    "hinode_synthetic.nc"
 )
 
 # ============================================================
 # ANALYSIS SPACE/TIME WINDOW
 #
-# Synthetic supergranule-like application.
+# Hinode photospheric application.
 #
 # User-facing analysis choices are specified in physical units.
 # Integer grid strides used internally are derived below.
 # ============================================================
 
 analysis_t0_h = 0.0
-analysis_hours = 6.0
+analysis_hours = Inf
 
 # Flow-map / Cauchy-Green spatial resolution.
 
@@ -58,7 +58,7 @@ cg_space_km = 464.0
 
 # IDL/FEM spatial and temporal resolution.
 
-idl_space_km = 928.0
+idl_space_km = 464.0
 idl_time_h = 0.25
 
 # ============================================================
@@ -73,11 +73,13 @@ output_dir = joinpath(
 
 mkpath(output_dir)
 
-output_file =
-    joinpath(
-        output_dir,
-        "FTRCS_supergranule_synthetic_output.nc"
-    )
+output_dir = joinpath(
+    @__DIR__,
+    "..",
+    "runs"
+)
+
+mkpath(output_dir)
 
 
 # ============================================================
@@ -136,7 +138,7 @@ a_values = [
     0.10
 ]
 
-nmodes = 24
+nmodes = 32
 
 eig_tol     = 1e-5
 eig_maxiter = 300
@@ -144,16 +146,11 @@ eig_sigma   = 1e-10
 
 # ============================================================
 # IDL-SEBA CANDIDATES
+#
+# Candidate supports are defined by Gary Froyland's
+# subpartition-of-unity postprocessing.  There are no plateau
+# parameters and no physical area thresholds.
 # ============================================================
-
-candidate_quantile       = 0.90
-candidate_min_area       = 20
-
-# ============================================================
-# FTRCS / LAVD CLASSIFICATION
-# ============================================================
-
-lavd_ratio_min = 1.0
 
 # ============================================================
 # LOAD VELOCITY
@@ -169,10 +166,10 @@ lavd_ratio_min = 1.0
 # ============================================================
 
 isfile(data_file) ||
-    error("Synthetic supergranule velocity file not found: $data_file")
+    error("Hinode velocity file not found: $data_file")
 
 println()
-println("Loading synthetic supergranule-like velocity")
+println("Loading Hinode photospheric velocity")
 
 x,y,t,u,v =
     NCDataset(data_file,"r") do ds
@@ -187,8 +184,15 @@ x,y,t,u,v =
             Float64.(ds["t"][:])
 
         t1_requested =
-            analysis_t0_h +
-            analysis_hours
+           isfinite(analysis_hours) ?
+           analysis_t0_h + analysis_hours :
+           t_all[end]
+
+        t1_requested <= t_all[end] ||
+           error(
+           "Requested analysis window extends beyond velocity record: " *
+           "requested t1=$(t1_requested) h, available t1=$(t_all[end]) h"
+           )
 
         it =
             findall(
@@ -214,12 +218,12 @@ x,y,t,u,v =
                 length(it)
             ) ||
             error(
-                "Supergranule NetCDF u must be stored as [Ny Nx Nt]"
+                "Hinode NetCDF u must be stored as [Ny Nx Nt]"
             )
 
         size(v_yx) == size(u_yx) ||
             error(
-                "Supergranule u and v dimensions do not agree"
+                "Hinode u and v dimensions do not agree"
             )
 
         #
@@ -270,8 +274,8 @@ vel =
     )
 
 println()
-println("Supergranule velocity field")
-println("---------------------------")
+println("Hinode photospheric velocity field")
+println("----------------------------------")
 println("size(u) = ",size(vel.u)," = [Nx Ny Nt]")
 println("size(v) = ",size(vel.v)," = [Nx Ny Nt]")
 println(
@@ -320,7 +324,11 @@ seed_dx = cg_space_km
 seed_dy = cg_space_km
 
 t0 = analysis_t0_h
-t1 = analysis_t0_h + analysis_hours
+
+t1 =
+    isfinite(analysis_hours) ?
+    analysis_t0_h + analysis_hours :
+    vel.t[end]
 
 idl_space_stride =
     max(
@@ -399,7 +407,6 @@ println(
     " h"
 )
 
-
 # ============================================================
 # FLOW MAP
 # ============================================================
@@ -451,6 +458,22 @@ println("PhiY[1:5,1,1] = ", flow.PhiY[1:5,1,1])
 println()
 println("PhiX[1,1:5,1] = ", flow.PhiX[1,1:5,1])
 println("PhiY[1,1:5,1] = ", flow.PhiY[1,1:5,1])
+
+# ============================================================
+# STEP 5A: MATERIAL SURVIVAL DOMAIN
+#
+# For the selected analysis interval, retain only initial CG
+# nodes whose complete trajectories remain inside the observed
+# Hinode velocity domain.  This mask defines the spatial domain
+# used by the masked IDL/FEM assembly below.
+# ============================================================
+
+survival_mask,exit_time =
+    material_survival_mask(
+        flow,
+        vel;
+        verbose = true
+    )
 
 # ============================================================
 # CAUCHY-GREEN
@@ -517,8 +540,13 @@ idl = assemble_idl_operator(
     cg,
     vel;
     space_stride = idl_space_stride,
-    time_stride = idl_time_stride
+    time_stride = idl_time_stride,
+    wet_mask = survival_mask
 )
+
+# ============================================================
+# IDL SANITY CHECKS
+# ============================================================
 
 println()
 println("IDL sanity checks")
@@ -629,11 +657,18 @@ println(
 # EXTRACT IDL-SEBA CANDIDATES
 # ============================================================
 
+# ============================================================
+# FTRCS / LAVD CLASSIFICATION
+# ============================================================
+
+lavd_ratio_min = 1.0
+
+
+
+
 candidates = extract_idl_candidates(
     idl,
-    crossover;
-    qlevel = candidate_quantile,
-    min_area = candidate_min_area
+    crossover
 )
 
 println()
@@ -643,7 +678,7 @@ println("selected a           = ",candidates.a)
 println("localized objects    = ",length(candidates.order))
 
 println()
-println(" object        rho              threshold      active slices")
+println(" object        rho              tau_pu         active slices")
 
 for m in candidates.order
 
@@ -663,8 +698,134 @@ for m in candidates.order
     )
 end
 
+
+# ============================================================
+# FINITE-LIFETIME IDL-SEBA EPISODES
+#
+# Step 1 of the lifespan-aware FTRCS revision.
+#
+# A candidate is active whenever its thresholded SEBA mask is
+# nonempty.  If it disappears and later reappears, each contiguous
+# active period is returned as a separate CandidateEpisode.
+#
+# No LAVD or FTRCS logic is changed yet.
+# ============================================================
+
+episodes =
+    extract_candidate_episodes(
+        candidates
+    )
+
+println()
+println("IDL-SEBA episode times")
+println("----------------------")
+println(
+    " rank   SEBA object   episode       birth [h]       death [h]    duration [h]"
+)
+
+for ep in episodes
+
+    tb = idl.t[ep.birth_idx]
+    td = idl.t[ep.death_idx]
+
+    @printf(
+        "%5d   %11d   %7d   %13.6f   %13.6f   %12.6f\n",
+        ep.rank,
+        ep.seba_index,
+        ep.episode,
+        tb,
+        td,
+        td-tb
+    )
+
+end
+
+println()
+println(
+    "Total finite-lifetime episodes = ",
+    length(episodes)
+)
+
+println(
+    "Candidates with more than one episode = ",
+    count(
+        m -> count(ep -> ep.seba_index == m, episodes) > 1,
+        candidates.order
+    )
+)
+
+# ============================================================
+# FILTER AND GROUP FINITE-LIFETIME EPISODES
+#
+# Raw episode extraction records every contiguous active interval,
+# including isolated one-slice threshold crossings.
+#
+# For the lifespan-aware FTRCS development, require at least two
+# consecutive active IDL slices before promoting an interval to a
+# finite-lifetime coherent episode.
+#
+# Retained episodes are then grouped by their exact
+#
+#     (birth_idx, death_idx)
+#
+# pair. Later, each unique lifespan group can reuse one
+# flow-map/LAVD calculation.
+# ============================================================
+
+min_episode_slices = 2
+
+episode_grouping =
+    group_candidate_episodes(
+        episodes;
+        min_episode_slices = min_episode_slices,
+        verbose = true
+    )
+
+# ============================================================
+# STEP 4: FINITE-LIFETIME LAVD CLASSIFICATION
+#
+# Each retained FTCS episode is evaluated over its own lifespan.
+# Episodes sharing exactly the same birth/death indices reuse one
+# lifespan-specific flow-map/LAVD calculation.
+# ============================================================
+
+episode_ftrcs =
+    classify_ftrcs_episodes(
+        vel,
+        idl,
+        candidates,
+        episode_grouping,
+        flow;
+        lavd_ratio_min = lavd_ratio_min,
+        verbose = true
+    )
+
+# ============================================================
+# FTRCS OVERLAP / REDUNDANCY DIAGNOSTICS
+# ============================================================
+
+diagnose_ftrcs_overlap(
+    candidates,
+    episode_ftrcs
+)	 
+
+# ============================================================
+# LEGACY GLOBAL LAVD / CLASSIFICATION
+#
+# Disabled in Step 4. The old 0--12 h classifier is inconsistent
+# with finite-lifetime episode classification and is retained below
+# only as commented reference code.
+# ============================================================
+
+#=
 # ============================================================
 # LAVD
+#
+# NOTE:
+# The calculation below is still the LEGACY/global LAVD over the
+# complete 0--12 h interval. It is intentionally retained for
+# regression comparison while the lifespan-aware classifier is
+# developed.
 # ============================================================
 
 lavd = compute_lavd(
@@ -687,7 +848,7 @@ omega,omega_mean =
 vorticity_file =
     joinpath(
         output_dir,
-        "vorticity_supergranule.nc"
+        "vorticity_hinode_00h_12h.nc"
     )
 
 NCDataset(
@@ -807,18 +968,43 @@ println(
     length(ftrcs.pass)
 )
 
+=#
+
 # ============================================================
 # SAVE FTRCS OUTPUT
 # ============================================================
 
+t0_tag = @sprintf("%02.0f",t0)
+
+t1_tag =
+    isapprox(t1,round(t1); atol=1e-10) ?
+    @sprintf("%02.0f",t1) :
+    replace(@sprintf("%.2f",t1),"."=>"p")
+
+outfile =
+    joinpath(
+        output_dir,
+        "FTRCS_hinode_synthetic_$(t0_tag)h_$(t1_tag)h_output.nc"
+    )
+
 save_ftrcs_netcdf(
-    output_file,
+    outfile,
     idl,
     eig_results,
     crossover,
     candidates;
-    ftrcs = ftrcs,
+    episode_ftrcs = episode_ftrcs,
     t0 = t0,
     t1 = t1
 )
 
+println()
+println("Saved finite-lifetime FTRCS output:")
+println(outfile)
+
+println()
+println("--------------------------------")
+println("Hinode FTRCS run complete")
+println("--------------------------------")
+println("analysis window = ",t0," -- ",t1," h")
+println("output file = ",outfile)

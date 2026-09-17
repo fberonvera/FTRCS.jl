@@ -1,42 +1,76 @@
 # FTRCS.jl
 
-`FTRCS.jl` is a Julia implementation of the finite-time rotational coherent set (FTRCS) framework for two-dimensional, time-dependent velocity fields.
+`FTRCS.jl` is a Julia implementation of the finite-time rotational
+coherent set (FTRCS) framework for two-dimensional, time-dependent
+velocity fields.
 
-The framework combines finite-time transport coherence, identified using the inflated dynamic Laplacian (IDL), with intrinsic material rotation, diagnosed using the Lagrangian-averaged vorticity deviation (LAVD). Sparse eigenbasis approximation (SEBA) is used to localize coherent-set candidates within the leading IDL eigenspace.
+The framework combines finite-time transport coherence, identified using
+the inflated dynamic Laplacian (IDL), with intrinsic material rotation,
+diagnosed using the Lagrangian-averaged vorticity deviation (LAVD).
+Sparse eigenbasis approximation (SEBA) is used to localize features
+within the leading IDL eigenspace, and a subpartition-of-unity threshold
+is used to extract their high-membership supports.
 
-The method and its application to photospheric supergranulation are described in:
+The method and its application to photospheric supergranulation are
+described in:
 
-**F. J. Beron-Vera, "Quasi-material finite-time rotationally coherent sets in photospheric supergranulation," submitted to *Physics of Plasmas* (2026).**
+**F. J. Beron-Vera, "Quasi-material finite-time rotationally coherent
+sets in photospheric supergranulation," submitted to *Physics of
+Plasmas* (2026).**
 
-arXiv:2606.17108  
+arXiv:2606.17108\
 https://arxiv.org/abs/2606.17108
 
----
+------------------------------------------------------------------------
 
 ## Contributors
 
-- Francisco J. Beron-Vera
+-   Francisco J. Beron-Vera
 
-- Maria Josefina Olascoaga
+-   Maria Josefina Olascoaga
 
----
+------------------------------------------------------------------------
 
 ## Overview
 
-Finite-time flow organization need not be rotational. A region may remain coherent because it rotates as a material body, but coherent transport can also arise through persistent contraction, convergence, or other nonrotational mechanisms. This distinction is particularly relevant in strongly compressible flows such as photospheric supergranulation.
+Finite-time flow organization need not be rotational. A region may
+remain coherent because it rotates as a material body, but coherent
+transport can also arise through persistent contraction, convergence, or
+other nonrotational mechanisms. This distinction is particularly
+relevant in strongly compressible flows such as photospheric
+supergranulation.
 
 FTRCS separates two aspects of finite-time organization:
 
-1. **Finite-time transport coherence**, identified using the inflated dynamic Laplacian (IDL).
-2. **Intrinsic rotational organization**, diagnosed using LAVD.
+1.  **Finite-time transport coherence**, identified using the inflated
+    dynamic Laplacian (IDL).
+2.  **Intrinsic rotational organization**, diagnosed using LAVD.
 
-The IDL identifies quasi-material coherent regions that may form, persist for only part of the observation window, or lose coherence before the end of the interval. SEBA is applied to the leading IDL eigenspace to obtain localized coherent-set candidates.
+The IDL identifies quasi-material coherent regions that may form,
+persist for only part of the observation window, or lose coherence
+before the end of the interval. For an analysis window `[t0,t0+T]`, the
+IDL calculation is restricted to the material survival domain
 
-The rotational character of these candidates is then assessed using their accumulated LAVD. This allows rotationally coherent structures to be distinguished from coherent sets associated primarily with contraction, convergence, or other nonrotational transport mechanisms.
+``` text
+W_T = {x0 in D : x(t;x0) remains in D throughout [t0,t0+T]}.
+```
+
+SEBA is applied to the leading IDL eigenspace to obtain sparse localized
+membership functions. Their positive parts are hard-thresholded using a
+global subpartition-of-unity threshold, producing high-membership
+coherent-set supports. Consecutive active time slices define
+finite-lifetime FTCS episodes with their own birth and death times
+`[ta,tb]`.
+
+The rotational character of each episode is then assessed using LAVD
+accumulated only over its own lifetime. This allows rotationally
+coherent structures to be distinguished from coherent sets associated
+primarily with contraction, convergence, or other nonrotational
+transport mechanisms.
 
 The basic computational sequence is therefore
 
-```text
+``` text
 velocity field
      |
      v
@@ -52,35 +86,36 @@ leading IDL eigenspace
 SEBA localization
      |
      v
-coherent-set candidates
+subpartition-of-unity supports
      |
      v
-LAVD classification
+finite-lifetime FTCS episodes
+     |
+     v
+lifetime-specific LAVD classification
      |
      v
 finite-time rotational coherent sets
 ```
 
----
+------------------------------------------------------------------------
 
 ## Repository structure
 
-```text
+``` text
 src/
     FTRCS.jl
 
 scripts/
-    run_FTRCS_gom.jl
-    run_FTRCS_supergranule.jl
+    run_FTRCS_hinode_synthetic.jl
 
 matlab/
-    generate_supergranule_synthetic.m
-    supergranule_synthetic_parameters.mat
-    plot_gom.m
-    plot_supergranule.m
+    hinode_synthetic_nc.m
+    hinode_synthetic_parameters.mat
+    plot_hinode_synthetic.m
 
 data/
-    aviso_20130518_20140421.nc
+    hinode_synthetic.nc          generated locally; not tracked
 
 runs/
     generated output
@@ -92,26 +127,37 @@ README.md
 
 The main numerical implementation is entirely in Julia.
 
-`src/FTRCS.jl` contains the reusable FTRCS routines. Application-specific choices are kept in the run scripts under `scripts/`.
+`src/FTRCS.jl` contains the reusable FTRCS routines. The Hinode-like
+application choices are kept in `scripts/run_FTRCS_hinode_synthetic.jl`.
+
+The public example uses a **synthetic Hinode-like photospheric flow**: a
+two-dimensional, time-dependent horizontal velocity field designed to
+reproduce the cellular, strongly compressible character of solar
+photospheric supergranulation without distributing the observational
+Hinode velocity data used in the research analysis.
 
 The MATLAB files are auxiliary:
 
-- `generate_supergranule_synthetic.m` reconstructs the synthetic supergranule-like velocity dataset used by the second example;
-- `supergranule_synthetic_parameters.mat` contains the fixed parameters defining that synthetic realization;
-- `plot_gom.m` visualizes the Gulf of Mexico output;
-- `plot_supergranule.m` visualizes the synthetic-supergranule output.
+-   `hinode_synthetic_nc.m` generates the synthetic Hinode-like
+    photospheric velocity field using the parameters stored in
+    `hinode_synthetic_parameters.mat`;
+-   `plot_hinode_synthetic.m` visualizes the FTRCS output produced by the Julia
+    calculation.
 
-MATLAB is not required for the FTRCS calculations themselves.
+MATLAB is required only to generate and inspect the synthetic test
+dataset and for the supplied visualization. The FTRCS calculations
+themselves are performed in Julia.
 
----
+------------------------------------------------------------------------
 
 ## Velocity-data convention
 
-The run scripts read two-dimensional time-dependent velocity fields from NetCDF.
+The run scripts read two-dimensional time-dependent velocity fields from
+NetCDF.
 
 The common external convention is
 
-```text
+``` text
 x       spatial coordinate                 [km]
 y       spatial coordinate                 [km]
 t       time                               [h]
@@ -122,13 +168,13 @@ v       y velocity component               [km/h]
 
 Velocity arrays in the NetCDF files are stored as
 
-```text
+``` text
 u(y,x,t), v(y,x,t)  ->  [Ny Nx Nt]
 ```
 
 The run scripts convert these arrays once using
 
-```julia
+``` julia
 u = permutedims(u,(2,1,3))
 v = permutedims(v,(2,1,3))
 ```
@@ -137,7 +183,7 @@ before constructing the internal velocity field.
 
 Inside `FTRCS.jl`, the invariant convention is
 
-```text
+``` text
 u(x,y,t), v(x,y,t)  ->  [Nx Ny Nt]
 
 dimension 1 -> x
@@ -145,218 +191,286 @@ dimension 2 -> y
 dimension 3 -> t
 ```
 
-All velocity interpolation, trajectory integration, spatial differentiation, Cauchy--Green calculations, vorticity, and LAVD calculations use this internal convention.
+All velocity interpolation, trajectory integration, spatial
+differentiation, Cauchy--Green calculations, vorticity, and LAVD
+calculations use this internal convention.
 
----
+------------------------------------------------------------------------
 
 ## Installation
 
-The Julia environment is specified by `Project.toml` and `Manifest.toml`.
+The Julia environment is specified by `Project.toml` and
+`Manifest.toml`.
 
-Clone the repository, enter its root directory, and instantiate the environment once:
+Clone the repository, enter its root directory, and instantiate the
+environment once:
 
-```bash
+``` bash
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-Application scripts are then executed from the repository root. For example,
+Application scripts are then executed from the repository root. For
+example,
 
-```bash
-julia --project=. --threads=18 scripts/run_FTRCS_gom.jl
+``` bash
+julia --project=. --threads=18 scripts/run_FTRCS_hinode_synthetic.jl
 ```
 
-The number of Julia threads may be changed according to the available hardware.
-
+The number of Julia threads may be changed according to the available
+hardware.
 
 ## Computational pipeline
 
-For a prescribed velocity field, the code performs the following principal steps.
+For a prescribed velocity field, the code performs the following
+principal steps.
 
 ### 1. Flow-map integration
 
-Trajectories are integrated over the prescribed finite-time analysis window on a user-defined spatial grid.
+Trajectories are integrated over the prescribed finite-time analysis
+window on a user-defined spatial grid.
 
 Two trajectory integrators are available.
 
 Adaptive Dormand--Prince:
 
-```julia
+``` julia
 flow_integrator = :DP5
 ```
 
-with user-specified relative and absolute tolerances, or fixed-step classical Runge--Kutta:
+with user-specified relative and absolute tolerances, or fixed-step
+classical Runge--Kutta:
 
-```julia
+``` julia
 flow_integrator = :RK4
 ```
 
 with a prescribed timestep.
 
-The trajectory ensemble is divided into vectorized batches and distributed across Julia threads.
+The trajectory ensemble is divided into vectorized batches and
+distributed across Julia threads.
 
 ### 2. Cauchy--Green tensor
 
 Spatial derivatives of the flow map are used to construct
 
-```text
+``` text
 DF = [ X_x  X_y
        Y_x  Y_y ]
 ```
 
 and the finite-time Cauchy--Green strain tensor
 
-```text
+``` text
 C = DF' * DF.
 ```
 
-The flow-map/Cauchy--Green spatial resolution is specified independently of the velocity-data grid.
+The flow-map/Cauchy--Green spatial resolution is specified independently
+of the velocity-data grid.
 
 ### 3. Inflated dynamic Laplacian
 
-The inflated dynamic Laplacian is assembled on a space-time finite-element grid.
+The inflated dynamic Laplacian is assembled on a space-time
+finite-element grid.
 
-The IDL/FEM spatial and temporal resolutions may be coarser than the flow-map grid and are specified independently in the run script.
+The IDL/FEM spatial and temporal resolutions may be coarser than the
+flow-map grid and are specified independently in the run script.
 
 ### 4. IDL eigenspectrum
 
-Leading IDL eigenpairs are computed over a user-defined sequence of inflation parameters,
+Leading IDL eigenpairs are computed over a user-defined sequence of
+inflation parameters,
 
-```julia
+``` julia
 a_values = [...]
 ```
 
 using a prescribed number of modes,
 
-```julia
+``` julia
 nmodes = ...
 ```
 
-The implementation reports the spatial and material contributions to the IDL Rayleigh quotient and uses their balance to diagnose a spatial/material crossover value of the inflation parameter.
+The implementation reports the spatial and material contributions to the
+IDL Rayleigh quotient and uses their balance to diagnose a
+spatial/material crossover value of the inflation parameter.
 
-### 5. SEBA localization
+### 5. Material survival domain
 
-Sparse eigenbasis approximation is applied to the leading IDL eigenspace to obtain localized coherent-set candidates.
+For an analysis window `[t0,t0+T]`, the IDL operator is constructed on
+the initial conditions whose trajectories remain in the computational or
+observational domain throughout the complete window,
 
-The number of retained IDL modes controls the dimension of the spectral space available to SEBA and should therefore be regarded as a spectral-resolution parameter.
+``` text
+W_T = {x0 in D : x(t;x0) remains in D
+                 for all t in [t0,t0+T]}.
+```
 
-### 6. LAVD
+The same original material labels `x0 in W_T` are retained throughout
+the IDL, SEBA, support-extraction, and LAVD-classification stages. In an
+open domain, the survival domain generally becomes smaller as the
+analysis window is increased.
+
+### 6. SEBA localization and subpartition-of-unity supports
+
+Sparse eigenbasis approximation is applied to the leading IDL eigenspace
+to obtain sparse localized vectors
+
+``` text
+S = [s1 ... sm].
+```
+
+SEBA chooses the sign of each vector to make it predominantly
+nonnegative and scales each column to have maximum value one. Positive
+entries can therefore be interpreted as membership strengths in the
+corresponding localized feature.
+
+To obtain hard supports, the code applies the subpartition-of-unity
+threshold of Froyland, Rock, and Sakellariou (2019). At each space-time
+degree of freedom, the positive SEBA memberships are sorted in
+descending order and their cumulative sums are formed. The global
+threshold `tau_PU` is the largest membership value associated with a
+cumulative sum exceeding one. Values at or below `tau_PU` are removed.
+By construction, the retained membership functions satisfy
+
+``` text
+sum_j p_j(x,t) <= 1
+```
+
+at every space-time point. Some points may therefore remain unassigned.
+
+The number of retained IDL modes controls the dimension of the spectral
+space available to SEBA and should therefore be regarded as a
+spectral-resolution parameter.
+
+### 7. Finite-lifetime FTCS episodes
+
+A thresholded SEBA support need not remain active throughout the full
+analysis window. Consecutive active time slices define a finite-lifetime
+FTCS episode with birth and death times `[ta,tb]`. Different episodes
+may therefore coexist over different subintervals of the same IDL
+analysis window.
+
+### 8. Lifetime-specific LAVD
 
 Relative vorticity is computed as
 
-```text
-omega = dv/dx - du/dy
+``` text
+omega = dv/dx - du/dy.
 ```
 
-and accumulated along trajectories to obtain the Lagrangian-averaged vorticity deviation.
+For an FTCS episode alive on `[ta,tb]`, LAVD is accumulated only over
+that episode lifetime while retaining the original material labels
+`x0 in W_T`:
 
-### 7. Rotational classification
-
-IDL--SEBA candidates are not required to be rotational.
-
-Their rotational enrichment is measured by
-
-```text
-           mean LAVD within candidate
-E_LAVD =  ----------------------------
-             mean LAVD over domain
+``` text
+LAVD_[ta,tb](x0)
+    = integral_[ta,tb]
+      |omega(x(t;x0),t) - <omega>(t)| dt.
 ```
 
-and the default FTRCS classification uses
+The full trajectories initialized at `t0` are reused; trajectories are
+not reinitialized at the episode birth time `ta`. Thus the SEBA support,
+material survival mask, and LAVD field remain indexed by the same
+initial conditions `x0`.
 
-```text
-E_LAVD > 1.
+### 9. Rotational classification
+
+Finite-lifetime IDL--SEBA episodes are not required to be rotational.
+For an episode with birth support `A`, its rotational enrichment is
+
+``` text
+                    mean LAVD_[ta,tb] over A
+E_LAVD = ------------------------------------------------
+         mean LAVD_[ta,tb] over (W_T minus A).
 ```
 
-Thus the IDL--SEBA stage identifies finite-time coherent sets, while the LAVD stage distinguishes those exhibiting enhanced accumulated intrinsic rotation.
+The default FTRCS classification uses
 
----
+``` text
+E_LAVD >= 1.
+```
+
+Thus the IDL--SEBA/subpartition stage identifies finite-time coherent
+set episodes, while the lifetime-specific LAVD stage distinguishes those
+exhibiting enhanced accumulated intrinsic rotation.
+
+------------------------------------------------------------------------
 
 ## Application parameters
 
-All quantities intended to be changed by the user are specified in the application run scripts rather than in `src/FTRCS.jl`.
+All quantities intended to be changed by the user are specified in the
+application run scripts rather than in `src/FTRCS.jl`.
 
 These include:
 
-- input and output files;
-- analysis domain;
-- initial time and analysis duration;
-- flow-map/Cauchy--Green spatial resolution;
-- IDL/FEM spatial resolution;
-- IDL/FEM temporal resolution;
-- trajectory integrator;
-- fixed timestep or adaptive-solver tolerances;
-- trajectory batch size and parallel settings;
-- inflation-parameter range;
-- number of IDL eigenmodes;
-- eigensolver parameters;
-- SEBA thresholding parameters; and
-- LAVD classification threshold.
+-   input and output files;
+-   analysis domain;
+-   initial time and analysis duration;
+-   flow-map/Cauchy--Green spatial resolution;
+-   IDL/FEM spatial resolution;
+-   IDL/FEM temporal resolution;
+-   trajectory integrator;
+-   fixed timestep or adaptive-solver tolerances;
+-   trajectory batch size and parallel settings;
+-   inflation-parameter range;
+-   number of IDL eigenmodes;
+-   eigensolver parameters;
+-   SEBA parameters and subpartition-of-unity support extraction; and
+-   LAVD rotational-enrichment threshold.
 
----
+------------------------------------------------------------------------
 
-## Example 1: Gulf of Mexico altimetry
+## Synthetic Hinode-like photospheric example
 
-The Gulf of Mexico example uses the included AVISO altimetry dataset
+The public example uses a synthetic horizontal photospheric velocity
+field with spatial and temporal characteristics qualitatively resembling
+solar supergranulation as observed by Hinode.
 
-```text
-data/aviso_20130518_20140421.nc
+The synthetic field is **not** the observational Hinode velocity field
+used in the accompanying research. It is a freely reproducible test
+field intended to exercise the complete FTRCS pipeline while avoiding
+distribution of the observational dataset.
+
+The flow is two-dimensional and time dependent, with cellular horizontal
+convergence and divergence characteristic of photospheric
+supergranulation and localized rotational motion. It provides a compact
+test of trajectory integration, material survival, the IDL,
+IDL-eigenspace localization by SEBA, subpartition-of-unity support
+extraction, finite-lifetime episode detection, and lifetime-specific
+LAVD classification.
+
+The large synthetic velocity file is not stored in the repository.
+Instead, generate it locally in MATLAB using
+
+``` matlab
+matlab/hinode_synthetic_nc.m
 ```
 
-and is configured by
+together with the fixed parameter file
 
-```text
-scripts/run_FTRCS_gom.jl
-```
-
-The run script selects a regional Gulf of Mexico domain and finite-time analysis interval, converts the geographic velocity data to the Cartesian coordinates and units used internally by FTRCS, and constructs a wet-domain mask to accommodate land boundaries.
-
-Run the example from the repository root with
-
-```bash
-julia --project=. --threads=18 scripts/run_FTRCS_gom.jl
-```
-
-The resulting NetCDF output is written to `runs/`.
-
-The corresponding MATLAB visualization script is
-
-```text
-matlab/plot_gom.m
-```
-
----
-
-## Example 2: synthetic supergranule-like flow
-
-The second example uses a synthetic, strongly compressible cellular velocity field with spatial and temporal characteristics qualitatively resembling photospheric supergranulation.
-
-The synthetic field is not a reconstruction of the observational velocity field used in the accompanying paper. It is provided as a freely reproducible test velocity field on which the complete FTRCS pipeline can be exercised.
-
-The velocity is constructed from time-dependent Gaussian potential and rotational components. The potential component produces strong horizontal convergence and divergence, while the weaker rotational component introduces localized intrinsic rotation.
-
-The large NetCDF velocity file is not stored in the repository. Instead, it is reconstructed locally from a small fixed parameter set.
-
-In MATLAB, run
-
-```matlab
-matlab/generate_supergranule_synthetic.m
-```
-
-using the accompanying parameter file
-
-```text
-matlab/supergranule_synthetic_parameters.mat
+``` text
+matlab/hinode_synthetic_parameters.mat
 ```
 
 The generator creates
 
-```text
-data/supergranule_synthetic.nc
+``` text
+data/hinode_synthetic.nc
 ```
 
-with
+The generated synthetic flow can be inspected before running the FTRCS
+calculation using
 
-```text
+``` matlab
+matlab/plot_hinode_synthetic.m
+```
+
+This provides a direct visualization of the synthetic horizontal
+photospheric velocity field used by the reproducible example.
+
+with the external convention
+
+``` text
 x,y       km
 t         h
 u,v       km/h
@@ -364,59 +478,78 @@ u,v       km/h
 size(u) = size(v) = [Ny Nx Nt].
 ```
 
-The generator also displays the synthetic velocity field through vorticity and streamline snapshots as a visual check.
+Then run the FTRCS calculation from the repository root:
 
-The FTRCS calculation is then run from the repository root with
-
-```bash
-julia --project=. --threads=18 scripts/run_FTRCS_supergranule.jl
+``` bash
+julia --project=. --threads=18 scripts/run_FTRCS_hinode.jl
 ```
 
 The corresponding MATLAB visualization script is
 
-```text
-matlab/plot_supergranule.m
+``` text
+matlab/plot_hinode.m
 ```
 
+The example is intended as a reproducible end-to-end test of the
+software, not as a replacement for the observational Hinode analysis.
+
+------------------------------------------------------------------------
 
 ## Output
 
 Application scripts write their NetCDF results to
 
-```text
+``` text
 runs/
 ```
 
 unless another location is specified in the corresponding run script.
 
-The output contains the quantities required for subsequent visualization and analysis, including the IDL--SEBA candidate masks, candidate diagnostics, LAVD classification information, and the spatial and temporal grids used by the calculation.
+The output contains the quantities required for subsequent visualization
+and analysis, including the material survival mask, SEBA fields,
+subpartition-of-unity threshold and support masks, finite-lifetime
+episode birth/death information, lifetime-specific LAVD classification
+diagnostics, and the spatial and temporal grids used by the calculation.
 
 Generated files under `runs/` are not tracked by Git.
 
----
+------------------------------------------------------------------------
 
 ## Notes on interpretation
 
-IDL--SEBA and LAVD address related but distinct aspects of finite-time flow organization.
+IDL--SEBA support extraction and LAVD address related but distinct
+aspects of finite-time flow organization.
 
-IDL--SEBA identifies regions that are coherent from the standpoint of finite-time transport. LAVD measures accumulated intrinsic material rotation. Consequently, not every IDL--SEBA coherent set is expected to satisfy the rotational criterion.
+IDL and SEBA identify localized finite-time transport features, while
+the subpartition-of-unity threshold defines their high-membership
+supports. LAVD measures accumulated intrinsic material rotation over
+each support episode's own lifetime. Consequently, not every finite-time
+coherent-set episode is expected to satisfy the rotational criterion.
 
-Similarly, IDL--SEBA boundaries should not in general be interpreted as equivalent to material-vortex boundaries obtained from other definitions, such as geodesic vortex boundaries. The methods optimize different notions of finite-time coherence.
+Similarly, IDL--SEBA boundaries should not in general be interpreted as
+equivalent to material-vortex boundaries obtained from other
+definitions, such as geodesic vortex boundaries. The methods optimize
+different notions of finite-time coherence.
 
-The Gulf of Mexico and synthetic supergranule-like examples illustrate the framework in dynamically different settings, including an ocean flow with land boundaries and a strongly compressible cellular flow.
+The synthetic Hinode-like example is provided to exercise the complete
+software pipeline on a reproducible photospheric flow. Observational
+Hinode velocity data are not distributed with this repository.
 
----
+------------------------------------------------------------------------
 
 ## Code development
 
-The Julia implementation was adapted from MATLAB codes developed by
-F. J. Beron-Vera, with contributions from M. J. Olascoaga to the
+The Julia implementation was adapted from MATLAB codes developed by F.
+J. Beron-Vera, with contributions from M. J. Olascoaga to the
 translation to Julia. ChatGPT was used to assist with code translation,
 debugging, and documentation. The numerical methodology, detection
 strategy, and scientific design are those of F. J. Beron-Vera.
 
----
+------------------------------------------------------------------------
 
 ## Status
 
-This repository accompanies ongoing research and is currently under development. Numerical parameters and interfaces may continue to evolve as the implementation is tested across additional velocity fields.
+This repository accompanies ongoing research and is currently under
+development. The included synthetic Hinode-like example provides a
+reproducible end-to-end test of the current implementation. Numerical
+parameters and interfaces may continue to evolve.
