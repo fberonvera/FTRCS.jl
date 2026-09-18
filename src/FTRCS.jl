@@ -287,6 +287,13 @@ function compute_flowmap(
     seed_dx::Real,
     seed_dy::Real,
     window::Tuple{<:Real,<:Real},
+    seed_bounds::Union{
+        Nothing,
+        Tuple{
+            Tuple{<:Real,<:Real},
+            Tuple{<:Real,<:Real}
+        }
+    } = nothing,
     integrator::Symbol,
     rk4_dt::Real,
     reltol::Real,
@@ -337,14 +344,80 @@ function compute_flowmap(
         V.t[ids]
 
     # --------------------------------------------------------
-    # Trajectory grid
+    # Trajectory / analysis grid
+    #
+    # By default, initial conditions fill the complete velocity
+    # domain.  If seed_bounds is supplied, initial conditions
+    # are restricted to the rectangular analysis domain
+    #
+    #     ((xmin,xmax),(ymin,ymax)).
+    #
+    # Trajectories are still integrated using the complete
+    # velocity field V and may leave the seed rectangle.
     # --------------------------------------------------------
+
+    if isnothing(seed_bounds)
+
+        xmin_seed = first(V.x)
+        xmax_seed = last(V.x)
+
+        ymin_seed = first(V.y)
+        ymax_seed = last(V.y)
+
+    else
+
+        xbounds,ybounds =
+            seed_bounds
+
+        xmin_seed =
+            Float64(xbounds[1])
+
+        xmax_seed =
+            Float64(xbounds[2])
+
+        ymin_seed =
+            Float64(ybounds[1])
+
+        ymax_seed =
+            Float64(ybounds[2])
+
+        xmin_seed < xmax_seed ||
+            error(
+                "seed_bounds must satisfy xmin < xmax"
+            )
+
+        ymin_seed < ymax_seed ||
+            error(
+                "seed_bounds must satisfy ymin < ymax"
+            )
+
+        xmin_seed >= first(V.x) ||
+            error(
+                "Seed xmin lies outside velocity domain"
+            )
+
+        xmax_seed <= last(V.x) ||
+            error(
+                "Seed xmax lies outside velocity domain"
+            )
+
+        ymin_seed >= first(V.y) ||
+            error(
+                "Seed ymin lies outside velocity domain"
+            )
+
+        ymax_seed <= last(V.y) ||
+            error(
+                "Seed ymax lies outside velocity domain"
+            )
+
+    end
 
     xseed =
         collect(
             range(
-                first(V.x),
-                stop = last(V.x),
+                xmin_seed,
+                stop = xmax_seed,
                 step = Float64(seed_dx)
             )
         )
@@ -352,14 +425,24 @@ function compute_flowmap(
     yseed =
         collect(
             range(
-                first(V.y),
-                stop = last(V.y),
+                ymin_seed,
+                stop = ymax_seed,
                 step = Float64(seed_dy)
             )
         )
 
     Nx0 = length(xseed)
     Ny0 = length(yseed)
+
+    Nx0 >= 2 ||
+        error(
+            "Seed rectangle contains fewer than two x nodes"
+        )
+
+    Ny0 >= 2 ||
+        error(
+            "Seed rectangle contains fewer than two y nodes"
+        )
 
     Np = Nx0 * Ny0
     Nt = length(times)
@@ -384,8 +467,52 @@ function compute_flowmap(
     println()
     println("Computing flow map")
     println("window       = $(times[1]) -- $(times[end]) h")
-    println("seed spacing = $(seed_dx) x $(seed_dy) km")
-    println("seed grid    = $Nx0 x $Ny0")
+    println(
+        "velocity x   = ",
+        first(V.x),
+        " -- ",
+        last(V.x),
+        " km"
+    )
+
+    println(
+        "velocity y   = ",
+        first(V.y),
+        " -- ",
+        last(V.y),
+        " km"
+    )
+
+    println(
+        "seed x       = ",
+        first(xseed),
+        " -- ",
+        last(xseed),
+        " km"
+    )
+
+    println(
+        "seed y       = ",
+        first(yseed),
+        " -- ",
+        last(yseed),
+        " km"
+    )
+
+    println(
+        "seed spacing = ",
+        seed_dx,
+        " x ",
+        seed_dy,
+        " km"
+    )
+
+    println(
+        "seed grid    = ",
+        Nx0,
+        " x ",
+        Ny0
+    )
     println("trajectories = $Np")
     println("output times = $Nt")
     println("batch size   = $batch_size")

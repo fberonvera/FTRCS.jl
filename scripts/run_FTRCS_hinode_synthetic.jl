@@ -50,7 +50,43 @@ data_file = joinpath(
 # ============================================================
 
 analysis_t0_h = 0.0
-analysis_hours = Inf
+analysis_hours = 6.0
+
+# Spatial analysis rectangle [km].
+#
+# This specifies where the initial conditions for the flow map,
+# Cauchy--Green tensor, and IDL calculation are placed.
+#
+# To use the complete Hinode velocity domain:
+#
+#     analysis_bounds = nothing
+#
+# To restrict the calculation to a rectangular subdomain, use:
+#
+#     analysis_bounds = (
+#         (xmin,xmax),   # x bounds [km]
+#         (ymin,ymax)    # y bounds [km]
+#     )
+#
+# For example:
+#
+#     analysis_bounds = (
+#         (10_000.0,40_000.0),
+#         (15_000.0,35_000.0)
+#     )
+#
+# restricts the initial-condition grid to
+#
+#     10,000 <= x <= 40,000 km,
+#     15,000 <= y <= 35,000 km.
+#
+# The velocity field itself is NOT restricted to this rectangle.
+# Trajectories may leave the analysis rectangle and continue to
+# be integrated as long as they remain inside the complete
+# velocity-data domain.
+# ============================================================
+
+analysis_bounds = nothing
 
 # Flow-map / Cauchy-Green spatial resolution.
 
@@ -416,6 +452,7 @@ flow = compute_flowmap(
     seed_dx = seed_dx,
     seed_dy = seed_dy,
     window = (t0,t1),
+    seed_bounds = analysis_bounds,
     integrator = flow_integrator,
     rk4_dt = rk4_dt_h,
     reltol = reltol,
