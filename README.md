@@ -141,8 +141,8 @@ The MATLAB files are auxiliary:
 -   `hinode_synthetic_nc.m` generates the synthetic Hinode-like
     photospheric velocity field using the parameters stored in
     `hinode_synthetic_parameters.mat`;
--   `plot_hinode_synthetic.m` visualizes the FTRCS output produced by the Julia
-    calculation.
+-   `plot_hinode_synthetic.m` visualizes the FTRCS output produced by
+    the Julia calculation.
 
 MATLAB is required only to generate and inspect the synthetic test
 dataset and for the supplied visualization. The FTRCS calculations
@@ -227,7 +227,33 @@ principal steps.
 ### 1. Flow-map integration
 
 Trajectories are integrated over the prescribed finite-time analysis
-window on a user-defined spatial grid.
+window on a user-defined rectangular initial-condition grid.
+
+The analysis rectangle may be smaller than the velocity-data domain.
+This allows trajectories to be initialized only in the region where
+FTRCS are to be computed while still using velocity data from a larger
+surrounding domain. Trajectories may leave the analysis rectangle during
+the integration; they remain admissible as long as they remain inside
+the velocity-data domain.
+
+The flow-map routine accepts the optional keyword
+
+``` julia
+seed_bounds = (
+    (xmin,xmax),
+    (ymin,ymax)
+)
+```
+
+with bounds expressed in the same Cartesian coordinates as the velocity
+field. Setting
+
+``` julia
+seed_bounds = nothing
+```
+
+uses the complete velocity-data domain, preserving the original
+full-domain behavior.
 
 Two trajectory integrators are available.
 
@@ -296,19 +322,27 @@ spatial/material crossover value of the inflation parameter.
 
 ### 5. Material survival domain
 
+The velocity-data domain and the analysis domain are distinct. Initial
+conditions are seeded in the chosen analysis rectangle, while their
+trajectories are evaluated using the complete velocity-data domain.
+
 For an analysis window `[t0,t0+T]`, the IDL operator is constructed on
-the initial conditions whose trajectories remain in the computational or
-observational domain throughout the complete window,
+the seeded initial conditions whose trajectories remain inside the
+velocity-data domain throughout the complete window,
 
 ``` text
-W_T = {x0 in D : x(t;x0) remains in D
-                 for all t in [t0,t0+T]}.
+W_T = {x0 in D_analysis :
+       x(t;x0) remains in D_data
+       for all t in [t0,t0+T]}.
 ```
 
 The same original material labels `x0 in W_T` are retained throughout
-the IDL, SEBA, support-extraction, and LAVD-classification stages. In an
-open domain, the survival domain generally becomes smaller as the
-analysis window is increased.
+the IDL, SEBA, support-extraction, and LAVD-classification stages. A
+larger velocity-data domain can therefore provide a buffer around a
+smaller analysis rectangle and reduce trajectory loss through the data
+boundaries. In an open or insufficiently buffered data domain, the
+survival domain generally becomes smaller as the analysis window is
+increased.
 
 ### 6. SEBA localization and subpartition-of-unity supports
 
@@ -404,7 +438,8 @@ application run scripts rather than in `src/FTRCS.jl`.
 These include:
 
 -   input and output files;
--   analysis domain;
+-   velocity-data domain;
+-   rectangular analysis/initial-condition domain (`seed_bounds`);
 -   initial time and analysis duration;
 -   flow-map/Cauchy--Green spatial resolution;
 -   IDL/FEM spatial resolution;
@@ -438,6 +473,26 @@ test of trajectory integration, material survival, the IDL,
 IDL-eigenspace localization by SEBA, subpartition-of-unity support
 extraction, finite-lifetime episode detection, and lifetime-specific
 LAVD classification.
+
+The supplied Hinode run script uses the complete synthetic velocity
+domain by default,
+
+``` julia
+analysis_bounds = nothing
+```
+
+but the FTRCS calculation can be restricted to any rectangular
+subdomain, for example,
+
+``` julia
+analysis_bounds = (
+    (10_000.0,40_000.0),
+    (15_000.0,35_000.0)
+)
+```
+
+with distances in km. Only the initial-condition grid is restricted; the
+trajectories continue to use the complete synthetic velocity field.
 
 The large synthetic velocity file is not stored in the repository.
 Instead, generate it locally in MATLAB using
