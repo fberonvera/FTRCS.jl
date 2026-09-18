@@ -3875,7 +3875,7 @@ function classify_ftrcs_episodes(
             "  episodes = ",length(G.episodes)
         )
 
-		 lavd_score =
+        lavd_full =
             compute_lavd_interval(
                 V,
                 F,
@@ -3885,11 +3885,30 @@ function classify_ftrcs_episodes(
                 tb
             )
 
-	    any(.!isfinite.(lavd_score[domain_mask])) &&
+        # LAVD is computed on the full flow-map / CG grid.
+        # Restrict it to the spatial grid retained by the IDL,
+        # so that lavd_score, domain_mask, and C.masks are all
+        # indexed by the same material labels.
+
+        lavd_score =
+            Matrix(
+                @view lavd_full[
+                    O.ix,
+                    O.iy
+                ]
+            )
+
+        size(lavd_score) == size(domain_mask) ||
+            error(
+                "IDL-grid LAVD size $(size(lavd_score)) does not match " *
+                "material-domain size $(size(domain_mask))"
+            )
+
+        any(.!isfinite.(lavd_score[domain_mask])) &&
             error(
                 "Non-finite LAVD found inside the IDL material " *
                 "survival domain"
-            )		
+            )
 
         for ep in G.episodes
 
