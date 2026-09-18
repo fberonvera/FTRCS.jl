@@ -21,6 +21,23 @@ Plasmas* (2026).**
 arXiv:2606.17108\
 https://arxiv.org/abs/2606.17108
 
+The FTRCS framework builds on the Dynamic Laplacian approach introduced
+by Gary Froyland and on the Inflated Dynamic Laplacian developed by
+Atnip, Froyland, and Koltai. The principal references for these
+foundational developments are:
+
+- G. Froyland (2015), "Dynamic isoperimetry and the geometry of
+  Lagrangian coherent structures," *Nonlinearity*, **28**(10),
+  3587--3622. DOI: 10.1088/0951-7715/28/10/3587.
+
+- J. Atnip, G. Froyland, and P. Koltai (2026), "An inflated dynamic
+  Laplacian to track the emergence and disappearance of semi-material
+  coherent sets," *Journal of Nonlinear Science*, **36**(4), 89.
+
+`FTRCS.jl` uses the IDL to identify finite-time transport-coherent sets
+and combines this with SEBA localization, subpartition-of-unity support
+extraction, and LAVD-based rotational classification.
+
 ------------------------------------------------------------------------
 
 ## Contributors
